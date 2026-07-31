@@ -10,7 +10,12 @@ HTTPS enforced). Publisher pages for the Ottermill app fleet:
 - `/` — studio landing
 - `/actuo/` — Actuo app page (store marketingUrl) + `/actuo/privacy|terms|support`
 
-Source of truth for Actuo's legal pages is `repos/sigma-exam-planner/legal/` —
-edit there, copy here, push (Pages redeploys automatically). Add future apps as
-new top-level folders. Commit author is intentionally "Ottermill" (repo-local git
+**CANONICALITY (resolved 2026-07-31, CAL phase 1A): this repo's `actuo/*.html` copies
+of Actuo's legal pages are CANONICAL, because this repo is what actually serves
+ottermill.app** (it holds the `CNAME` and GitHub Pages publishes from it).
+`repos/sigma-exam-planner/legal/` is a MIRROR and must be updated in the same change,
+then the live URL verified (`curl` the page and grep for the new text — a successful
+push is not evidence the served page moved). This supersedes the previous line naming
+sigma-exam-planner the source of truth, which contradicted that repo's own CLAUDE.md.
+Add future apps as new top-level folders. Commit author is intentionally "Ottermill" (repo-local git
 config) — keep Ryan's name out of this public repo.
