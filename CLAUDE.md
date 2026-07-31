@@ -1,8 +1,8 @@
 # ottermill-site — Ottermill studio site (GitHub Pages)
 
-> **BOOTSTRAP CHECK (fresh machine / wiped config):** if `~/.claude/CLAUDE.md` is
-> missing Ryan's global rules (token-efficiency, promote-lessons, Opus-routing…),
-> restore them first from the private repo
+> **BOOTSTRAP CHECK (fresh machine / wiped config):** if `~/.claude/CLAUDE.md` or
+> `~/.claude/rules/` is missing Ryan's global rules (token-efficiency,
+> promote-lessons, Opus-routing…), restore them first from the private repo
 > **github.com/RyanAClark/claude-config** (its README has the exact commands).
 
 Static site served at **https://ottermill.app** via GitHub Pages (CNAME file;
