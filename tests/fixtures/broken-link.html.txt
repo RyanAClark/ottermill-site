@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Broken link control</title></head>
+<body><a href="/missing/page">Missing page</a></body>
+</html>
