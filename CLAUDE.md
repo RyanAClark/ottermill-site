@@ -19,3 +19,5 @@ push is not evidence the served page moved). This supersedes the previous line n
 sigma-exam-planner the source of truth, which contradicted that repo's own CLAUDE.md.
 Add future apps as new top-level folders. Commit author is intentionally "Ottermill" (repo-local git
 config) — keep Ryan's name out of this public repo.
+
+Testing: `docs/TESTING.md` (instantiates the estate testing standard, `claude-config/docs/TESTING_STANDARD.md`).
