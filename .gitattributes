@@ -1,0 +1,4 @@
+/ruff.toml text eol=lf
+/scripts/quality_gate.py text eol=lf
+/.github/workflows/quality.yml text eol=lf
+/.githooks/pre-commit text eol=lf
