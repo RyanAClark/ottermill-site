@@ -96,18 +96,14 @@ class StrictSiteParser(HTMLParser):
                 continue
             self.references.append(Reference(self.path, line, column, value))
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         self._record_attributes(attrs)
         if tag not in VOID_ELEMENTS:
             line, column = self._location()
             self.stack.append((tag, line, column))
 
-    def handle_startendtag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         self._record_attributes(attrs)
         if tag not in VOID_ELEMENTS:
@@ -117,7 +113,7 @@ class StrictSiteParser(HTMLParser):
                     self.path,
                     line,
                     column,
-                    f'non-void element <{tag}> cannot be self-closing in HTML',
+                    f"non-void element <{tag}> cannot be self-closing in HTML",
                 )
             )
 
@@ -126,12 +122,12 @@ class StrictSiteParser(HTMLParser):
         line, column = self._location()
         if tag in VOID_ELEMENTS:
             self.issues.append(
-                Issue(self.path, line, column, f'unexpected closing tag </{tag}>')
+                Issue(self.path, line, column, f"unexpected closing tag </{tag}>")
             )
             return
         if not self.stack:
             self.issues.append(
-                Issue(self.path, line, column, f'unexpected closing tag </{tag}>')
+                Issue(self.path, line, column, f"unexpected closing tag </{tag}>")
             )
             return
         if self.stack[-1][0] == tag:
@@ -144,7 +140,7 @@ class StrictSiteParser(HTMLParser):
                 self.path,
                 line,
                 column,
-                f'mismatched closing tag </{tag}>; expected </{expected}>',
+                f"mismatched closing tag </{tag}>; expected </{expected}>",
             )
         )
         matching_index = next(
@@ -162,7 +158,7 @@ class StrictSiteParser(HTMLParser):
                         self.path,
                         open_line,
                         open_column,
-                        f'unclosed tag <{open_tag}> before </{tag}>',
+                        f"unclosed tag <{open_tag}> before </{tag}>",
                     )
                 )
             del self.stack[matching_index:]
@@ -170,7 +166,7 @@ class StrictSiteParser(HTMLParser):
     def finish(self) -> None:
         super().close()
         for tag, line, column in reversed(self.stack):
-            self.issues.append(Issue(self.path, line, column, f'unclosed tag <{tag}>'))
+            self.issues.append(Issue(self.path, line, column, f"unclosed tag <{tag}>"))
         self.stack.clear()
 
 
@@ -242,7 +238,9 @@ def _internal_target(
         if not target.suffix:
             candidates.extend([target.with_suffix(".html"), target / "index.html"])
 
-    resolved = next((candidate for candidate in candidates if candidate.is_file()), None)
+    resolved = next(
+        (candidate for candidate in candidates if candidate.is_file()), None
+    )
     if resolved is None:
         return True, None, f'unresolved internal reference "{reference}"'
     return True, resolved, None
@@ -258,7 +256,9 @@ def scan_site(root: Path) -> ScanResult:
         try:
             source = html_file.read_text(encoding="utf-8")
         except UnicodeDecodeError as error:
-            issues.append(Issue(html_file, 1, error.start + 1, "file is not valid UTF-8"))
+            issues.append(
+                Issue(html_file, 1, error.start + 1, "file is not valid UTF-8")
+            )
             continue
         parser = StrictSiteParser(html_file)
         parser.feed(source)
@@ -276,7 +276,9 @@ def scan_site(root: Path) -> ScanResult:
             continue
         internal_references += 1
         if error:
-            issues.append(Issue(reference.path, reference.line, reference.column, error))
+            issues.append(
+                Issue(reference.path, reference.line, reference.column, error)
+            )
 
     return ScanResult(html_files, internal_references, tuple(issues))
 
@@ -328,3 +330,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# quality-gate control (c): benign touch of a legacy file.
