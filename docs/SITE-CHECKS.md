@@ -1,6 +1,7 @@
 # Site validation
 
-`scripts/check_site.py` scans every committed `*.html` page outside `.git`, checks
+`scripts/check_site.py` runs the `sitecheck` core over every site `*.html` page outside generated
+tooling directories, checks
 strictly balanced source markup and duplicate attributes, and resolves each internal
 `href` or `src` against the repository. It recognizes page files, directory indexes,
 extensionless URLs such as `/actuo/support`, and absolute URLs on the `CNAME` host.

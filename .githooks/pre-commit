@@ -1,8 +1,24 @@
 #!/bin/sh
 PY=python
+[ -x .venv/Scripts/python.exe ] && PY=.venv/Scripts/python.exe
 [ -x .venv/bin/python ] && PY=.venv/bin/python
 command -v "$PY" >/dev/null 2>&1 || PY=python3
 command -v "$PY" >/dev/null 2>&1 || PY=
+
+# Correctness roadmap: policy, contracts, generated properties, real entrypoint,
+# and the incident-derived Semgrep rule. Coverage and mutation run in CI.
+if [ -f docs/correctness.json ] && [ -n "$PY" ]; then
+  mkdir -p .quality-tmp || exit 1
+  "$PY" scripts/correctness_gate.py --staged || exit 1
+  "$PY" -m pytest tests/test_correctness_policy.py tests/test_changed_branch_gate.py tests/test_correctness_contracts.py tests/test_correctness_properties.py tests/test_correctness_entrypoint.py -q -p no:cacheprovider --basetemp=".quality-tmp/correctness-$$" || exit 1
+  "$PY" scripts/correctness_semgrep.py || exit 1
+elif [ -f docs/correctness.json ]; then
+  echo "pre-commit: correctness roadmap requires Python; commit BLOCKED." >&2
+  exit 1
+elif git cat-file -e HEAD:docs/correctness.json 2>/dev/null; then
+  echo "pre-commit: tracked correctness policy is missing; commit BLOCKED." >&2
+  exit 1
+fi
 
 # >>> quality-gate v1 (revert unit; do not edit inside) >>>
 QUALITY_GATE_ROOT=$(git rev-parse --show-toplevel) || exit 1

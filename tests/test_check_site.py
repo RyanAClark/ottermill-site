@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.check_site import discover_html_files, scan_site
+from sitecheck import discover_html_files, scan_site
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +23,9 @@ class SiteCheckerTests(unittest.TestCase):
             sorted(
                 path
                 for path in REPO_ROOT.rglob("*.html")
-                if ".git" not in path.relative_to(REPO_ROOT).parts
+                if {".git", ".venv", "node_modules"}.isdisjoint(
+                    path.relative_to(REPO_ROOT).parts
+                )
             )
         )
 
@@ -86,7 +88,8 @@ class SiteCheckerTests(unittest.TestCase):
             write_page(
                 root,
                 "actuo/support.html",
-                '<!doctype html><html><body><a href="#contact">Contact</a></body></html>',
+                '<!doctype html><html><body><a href="#contact">'
+                "Contact</a></body></html>",
             )
 
             result = scan_site(root)
@@ -112,11 +115,13 @@ class SiteCheckerTests(unittest.TestCase):
         self.assertEqual((), result.issues)
         self.assertEqual(2, result.internal_references)
 
-    def test_discovery_excludes_git_internals_only(self) -> None:
+    def test_discovery_excludes_generated_tooling_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             write_page(root, "nested/page.html", "<html></html>")
             write_page(root, ".git/hidden.html", "<html></html>")
+            write_page(root, ".venv/generated.html", "<html></html>")
+            write_page(root, "node_modules/package.html", "<html></html>")
 
             pages = discover_html_files(root)
 

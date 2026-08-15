@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "quality_gate.py"
 EXPECTED_GATE_SHA256 = (
-    "57636d712187002ac1eb42c3afcb2ed936feff69d5b8ed61f158798a80a903be"
+    "27d77691639b95111593820b7be5ecae3ba1d766c56899a8d85af1c9b4e47a83"
 )
 EXPECTED_WORKFLOW_SHA256 = (
     "553a9b16e24af62d6d4b2cbdf9160c27ed52fe364d2b6c579fac037243cc2864"

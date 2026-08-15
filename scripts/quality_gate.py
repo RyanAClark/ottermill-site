@@ -42,6 +42,7 @@ CODE_EXTENSIONS = frozenset(
         ".java",
         ".js",
         ".jsx",
+        ".kt",
         ".mjs",
         ".php",
         ".py",
@@ -449,8 +450,19 @@ def _pyright_config_bytes(after_root: Path) -> bytes:
     path = after_root / "pyrightconfig.json"
     try:
         raw = path.read_bytes()
+    except FileNotFoundError:
+        raw = (
+            b'{\n  "typeCheckingMode": "strict",\n'
+            b'  "extraPaths": ["scripts"],\n'
+            b'  "useLibraryCodeForTypes": true\n}\n'
+        )
+    except OSError as exc:
+        raise BrokenCheckError(
+            f"quality-gate: BROKEN CHECK: cannot read pyrightconfig.json: {exc}"
+        ) from exc
+    try:
         config = cast(object, json.loads(raw))
-    except (OSError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
         raise BrokenCheckError(
             f"quality-gate: BROKEN CHECK: cannot read pyrightconfig.json: {exc}"
         ) from exc

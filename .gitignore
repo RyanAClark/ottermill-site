@@ -1,1 +1,7 @@
 __pycache__/
+.venv/
+.coverage
+.hypothesis/
+.pytest_cache/
+.quality-tmp/
+artifacts/

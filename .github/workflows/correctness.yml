@@ -1,0 +1,35 @@
+name: Correctness roadmap
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Provision pinned quality tools
+        run: python -m pip install -r requirements-quality.txt
+      - name: Contracts, properties, and real entrypoint recovery
+        run: |
+          python scripts/correctness_gate.py --tree
+          python -m pytest tests/test_check_site.py tests/test_changed_branch_gate.py tests/test_correctness_contracts.py tests/test_correctness_properties.py tests/test_correctness_entrypoint.py -q
+      - name: Changed product branch outcomes
+        env:
+          QUALITY_BRANCH_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python -m coverage run --branch --source=sitecheck -m pytest tests/test_check_site.py tests/test_correctness_contracts.py tests/test_correctness_properties.py tests/test_correctness_entrypoint.py -q
+          python -m coverage run --append --branch --source=sitecheck -m sitecheck.core
+          python -m coverage json -o artifacts/correctness-coverage.json
+          python scripts/changed_branch_gate.py --base "$QUALITY_BRANCH_BASE" --adapter coverage-py-json --report artifacts/correctness-coverage.json --include-root sitecheck
+      - name: Correctness Semgrep controls
+        run: python scripts/correctness_semgrep.py
+      - name: Targeted mutation controls
+        run: python scripts/mutation_check_correctness.py

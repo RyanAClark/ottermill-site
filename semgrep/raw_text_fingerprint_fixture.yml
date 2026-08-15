@@ -1,0 +1,17 @@
+rules:
+  - id: correctness.raw-text-fingerprint-before-text-rewrite
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A text file is fingerprinted as raw bytes and later rewritten through text I/O.
+      Normalize line endings before both hashes or preserve and restore the original bytes.
+    metadata:
+      category: correctness
+      incident: lf-normalized-restore-compared-with-prenormalization-crlf-hash
+      mode: blocking-after-2026-08-15-estate-census
+      replacement: normalized-text-hash-or-byte-preserving-restore
+    patterns:
+      - pattern: |
+          $DIGEST = hashlib.sha256($PATH.read_bytes()).hexdigest()
+          ...
+          $PATH.write_text(...)

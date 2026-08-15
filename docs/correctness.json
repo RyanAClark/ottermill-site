@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "layers": [
+    "runtime-contracts",
+    "property-stateful-tests",
+    "real-entrypoint-recovery",
+    "changed-branch-coverage",
+    "correctness-semgrep",
+    "targeted-mutation"
+  ],
+  "profiles": {
+    "ottermill-site-armed": {
+      "runtime-contracts": {
+        "state": "ARMED",
+        "command": "python -m pytest tests/test_check_site.py tests/test_correctness_contracts.py -q",
+        "positive_control": "valid UTF-8 HTML, internal targets, and external references are classified and accepted",
+        "negative_control": "malformed markup, invalid UTF-8, duplicate attributes, broken targets, and root escapes refuse"
+      },
+      "property-stateful-tests": {
+        "state": "ARMED",
+        "command": "python -m pytest tests/test_correctness_properties.py -q",
+        "positive_control": "Hypothesis generates complete unordered page populations and resolvable extensionless targets",
+        "negative_control": "every generated parent escape refuses before filesystem resolution"
+      },
+      "real-entrypoint-recovery": {
+        "state": "ARMED",
+        "command": "python -m pytest tests/test_correctness_entrypoint.py -q",
+        "positive_control": "the shipped scripts/check_site.py entrypoint validates a corrected site",
+        "negative_control": "an empty population exits two, a product defect exits one, and a corrected retry exits zero"
+      },
+      "changed-branch-coverage": {
+        "state": "ARMED",
+        "command": "python -m pytest tests/test_changed_branch_gate.py -q && python -m coverage run --branch --source=sitecheck -m pytest tests/test_check_site.py tests/test_correctness_contracts.py tests/test_correctness_properties.py tests/test_correctness_entrypoint.py -q && python -m coverage run --append --branch --source=sitecheck -m sitecheck.core && python -m coverage json -o artifacts/correctness-coverage.json && python scripts/changed_branch_gate.py --base origin/main --adapter coverage-py-json --report artifacts/correctness-coverage.json --include-root sitecheck",
+        "positive_control": "coverage.py emits branch outcomes for changed sitecheck product code",
+        "negative_control": "the shared adapter refuses missing reports, unmapped changed product files, and uncovered changed outcomes"
+      },
+      "correctness-semgrep": {
+        "state": "ARMED",
+        "command": "python scripts/correctness_semgrep.py",
+        "positive_control": "the raw-byte fingerprint followed by text rewrite fixture is detected",
+        "negative_control": "normalized and byte-preserving near misses remain clean; tool errors and empty scans refuse"
+      },
+      "targeted-mutation": {
+        "state": "ARMED",
+        "command": "python scripts/mutation_check_correctness.py",
+        "positive_control": "each unmutated site-check control survives before its mutant runs",
+        "negative_control": "builder and independent parser and resolver mutants are caught separately with byte-exact restoration"
+      }
+    }
+  },
+  "repos": {
+    "ottermill-site": {
+      "profile": "ottermill-site-armed",
+      "generation": "existing"
+    }
+  }
+}

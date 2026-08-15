@@ -1,7 +1,7 @@
 # Testing — ottermill-site
 
 Per `~/.claude/docs/TESTING_STANDARD.md` (claude-config). This repo already carries a real,
-CI-wired suite (`scripts/check_site.py` + `tests/test_check_site.py`, built with Codex
+CI-wired suite (`scripts/check_site.py` + `sitecheck/` + `tests/test_check_site.py`, built with Codex
 `gpt-5.6-sol` 2026-08-07, Claude audit noted as pending in `docs/SITE-CHECKS.md`). This file
 documents that suite against the standard's five points rather than starting from zero.
 
@@ -10,6 +10,7 @@ documents that suite against the standard's five points rather than starting fro
 ```bash
 python scripts/check_site.py
 python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
 Measured this pass (n=3 each, warm interpreter, `time.perf_counter`):
@@ -51,11 +52,26 @@ nightly. No separate nightly task is needed or filed.
 | 2. Zero standing red | Met | Both gates green this pass; CI enforces on every push. |
 | 3. Pins execute behavior | Met | Tests call `scan_site`/`discover_html_files` directly against real (and fixture) HTML — none asserts on source text. |
 | 4. New check proves itself on a planted failure | Met | Two known-bad fixture controls exist (`malformed.html.txt`, `broken-link.html.txt`) and both are asserted to fail the checker. |
-| 5. Fix evidence is a pair | Not yet exercised | No fix has landed against this checker since it was built; no pair-ledger entry exists. Applies at the next bug fix, not now. |
+| 5. Fix evidence is a pair | Met for this rollout | All unmutated controls survived; builder and independent parser/resolver mutants were caught three of three with no harness errors. |
 | 6. Seams get contract tests | **Partial** | Internal-reference and markup seams have deliberate rejection cases (§3). The external-link seam has none — draft script below narrows this but is not wired into the gate. |
-| 7. Pure core / thin shell | Met | `scan_site`/`_internal_target`/`discover_html_files` are pure functions over paths and strings; `main()` is the thin CLI shell (argv, stdout/stderr, exit code). |
-| 8. Mutation checks diff-scoped | Not yet run | No mutation-check pass has been done against `check_site.py`; the pending "Claude audit" noted in `docs/SITE-CHECKS.md` is the natural place for one. |
+| 7. Pure core / thin shell | Met | `sitecheck/core.py` owns typed parsing and resolution; `scripts/check_site.py` is the thin production shell. |
+| 8. Mutation checks diff-scoped | Met | `scripts/mutation_check_correctness.py` targets the moved and changed site-check core only. |
 | **Pending independent audit** | Open | `docs/SITE-CHECKS.md` itself flags "Codex-built, Claude audit pending" — that audit has not happened as of this sweep. Noted here so it is not lost. |
+
+## Six correctness lanes
+
+All six lanes are `ARMED` in `docs/correctness.json`:
+
+- Runtime contracts reject malformed HTML, invalid UTF-8, duplicate attributes, missing values,
+  broken targets, backslashes, and root escapes.
+- Hypothesis generates unordered page populations, extensionless targets, and parent escapes.
+- The real `scripts/check_site.py` process distinguishes harness/setup failure (exit 2), product
+  failure (exit 1), and a corrected retry (exit 0).
+- Coverage records every branch in `sitecheck` (204 statements and 70 branch outcomes covered in
+  the rollout report); the shared adapter refuses changed uncovered outcomes and recognizes files
+  with a valid zero-branch report population.
+- The correctness-only Semgrep rule passes its matching and near-miss controls with no finding.
+- Targeted mutation reports builder and independent ratios separately; both are three of three.
 
 ## Draft addition this pass (unwired, new file)
 
