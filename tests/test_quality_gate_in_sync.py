@@ -7,17 +7,20 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Protocol, cast
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "quality_gate.py"
 EXPECTED_GATE_SHA256 = (
-    "29ef6b9050966c60d1a33c0d6dfcfb0f799b358d7b46aac225ffba44c9c75fd7"
+    "57636d712187002ac1eb42c3afcb2ed936feff69d5b8ed61f158798a80a903be"
 )
 EXPECTED_WORKFLOW_SHA256 = (
-    "1ee4fae37cf748d790001dd02b9cfa063f4b100e73da96d6d44e6c5918cb5dc7"
+    "553a9b16e24af62d6d4b2cbdf9160c27ed52fe364d2b6c579fac037243cc2864"
+)
+EXPECTED_PYRIGHT_SHA256 = (
+    "c80e6197d0eaacdff671b9bdc13a5e7d3100078a45e71b1745182482fc193b86"
 )
 BASE_RUFF = (
     "# generated from templates/code-quality/ruff.base.toml "
@@ -37,16 +40,20 @@ EXCLUSIONS = {
 }
 
 
-def load_quality_gate():
+class QualityGateModule(Protocol):
+    def template_sha256(self, path: Path) -> str: ...
+
+
+def load_quality_gate() -> QualityGateModule:
     name = f"quality_gate_consumer_{ROOT.name.replace('-', '_')}"
     if name in sys.modules:
-        return sys.modules[name]
+        return cast(QualityGateModule, sys.modules[name])
     spec = importlib.util.spec_from_file_location(name, GATE)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    return module
+    return cast(QualityGateModule, module)
 
 
 def checkout_name(root: Path) -> str:
@@ -69,6 +76,48 @@ def checkout_name(root: Path) -> str:
     return common_dir.parent.name
 
 
+def repo_name_from_remote_url(url: str) -> str:
+    """The repository name in `url`, whatever separator or scheme it uses.
+
+    THE ONE HOME FOR THIS PARSE. It lives in this module, not in `scripts/`,
+    because `scripts/new_repo.py` copies this file verbatim into every scaffolded
+    repo, where nothing under `scripts/` of ours is importable - a helper module
+    made the scaffolded copy fail to collect, which the standalone control in
+    `tests/test_new_repo_quality_scaffold.py` caught immediately.
+
+    Handles every form this estate produces: `https://host/owner/repo.git`,
+    `git@host:owner/repo.git`, a trailing slash, and a local path in POSIX or
+    Windows spelling. Raises on an empty string rather than returning one,
+    because an empty identity silently matches no table.
+
+    THE WINDOWS-PATH FORM IS THE THIRD FACE OF ONE DEFECT, and the first two are
+    named in `repo_identity` below. Both earlier fixes moved identity off the
+    filesystem path and onto the remote - correct, and incomplete, because a
+    build clone made by `scripts/build_root.py` has a LOCAL PATH as its origin.
+    Splitting on `/` alone returned the whole `C:\\Users\\...` path, matched no
+    EXCLUSIONS key, and reported a byte-correct `ruff.toml` as hand-edited.
+    Measured 2026-08-13 in the row 106 build clone.
+    """
+    cleaned = url.strip().replace("\\", "/").rstrip("/")
+    if not cleaned:
+        raise ValueError("cannot read a repository name from an empty remote url")
+    return cleaned.rsplit("/", 1)[-1].removesuffix(".git")
+
+
+def origin_url(root: Path = ROOT, timeout: int = 10) -> str | None:
+    """`origin`'s URL for the checkout at `root`, or None when there is no remote."""
+    proc = subprocess.run(
+        ["git", "-C", str(root), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    url = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not url:
+        return None
+    return url
+
+
 def repo_identity(root: Path = ROOT) -> str:
     """Name the REPO, from its remote - never the directory it happens to sit in.
 
@@ -88,15 +137,9 @@ def repo_identity(root: Path = ROOT) -> str:
     the default tuple for a misnamed directory; it is narrow and named here
     rather than silent.
     """
-    proc = subprocess.run(
-        ["git", "-C", str(root), "remote", "get-url", "origin"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    url = (proc.stdout or "").strip()
-    if proc.returncode == 0 and url:
-        return url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    url = origin_url(root)
+    if url:
+        return repo_name_from_remote_url(url)
     return checkout_name(root)
 
 
@@ -119,13 +162,17 @@ def test_vendored_checker_and_workflow_match_template_hashes() -> None:
     assert quality_gate.template_sha256(GATE) == EXPECTED_GATE_SHA256
     workflow = ROOT / ".github" / "workflows" / "quality.yml"
     assert quality_gate.template_sha256(workflow) == EXPECTED_WORKFLOW_SHA256
+    assert (
+        quality_gate.template_sha256(ROOT / "pyrightconfig.json")
+        == EXPECTED_PYRIGHT_SHA256
+    )
 
 
 def test_generated_ruff_config_matches_declared_repo_deltas() -> None:
     assert canonical_bytes(ROOT / "ruff.toml") == rendered_ruff()
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=60
     )
@@ -145,17 +192,11 @@ def test_repo_identity_matches_this_checkouts_own_remote() -> None:
     controls below carry the load. Stated rather than left for a reader to
     discover, because a test that cannot fail is a wish.
     """
-    proc = subprocess.run(
-        ["git", "-C", str(ROOT), "remote", "get-url", "origin"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    url = (proc.stdout or "").strip()
-    if proc.returncode != 0 or not url:
+    url = origin_url(ROOT)
+    if url is None:
         pytest.skip("no origin remote yet (freshly scaffolded repo)")
 
-    assert repo_identity() == url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    assert repo_identity() == repo_name_from_remote_url(url)
 
 
 REMOTE_URL_FORMS = [
@@ -163,13 +204,20 @@ REMOTE_URL_FORMS = [
     ("https-no-suffix", "https://github.com/RyanAClark/claude-config"),
     ("ssh-scp", "git@github.com:RyanAClark/claude-config.git"),
     ("trailing-slash", "https://github.com/RyanAClark/claude-config/"),
+    # A build clone made by scripts/build_root.py has a LOCAL path as its origin,
+    # in Windows spelling. Every such clone resolved to the whole path before
+    # 2026-08-13, matched no EXCLUSIONS key, and went red for nothing.
+    ("local-windows-path", r"C:\Users\ryana\repos\claude-config"),
+    ("local-posix-path", "/c/Users/ryana/repos/claude-config"),
 ]
 
 
 @pytest.mark.parametrize(
     "label,url", REMOTE_URL_FORMS, ids=[row[0] for row in REMOTE_URL_FORMS]
 )
-def test_repo_identity_ignores_the_directory_name(label, url, tmp_path) -> None:
+def test_repo_identity_ignores_the_directory_name(
+    label: str, url: str, tmp_path: Path
+) -> None:
     """The hermetic control: a checkout deliberately named something else.
 
     This is the assertion that goes RED against the pre-2026-08-12 logic, which
@@ -186,7 +234,7 @@ def test_repo_identity_ignores_the_directory_name(label, url, tmp_path) -> None:
 
 
 def test_repo_identity_falls_back_to_the_checkout_name_with_no_remote(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     """A freshly scaffolded repo has no origin yet; that path is named, not silent."""
     checkout = tmp_path / "brand-new-repo"
