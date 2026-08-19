@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
 
@@ -53,19 +54,54 @@ def load_policy() -> dict[str, Any]:
         raise SemgrepGateError(f"cannot load correctness policy: {exc}") from exc
 
 
+def user_scripts_directory() -> Path | None:
+    """Where pip's per-user install scheme puts console scripts, if it has one.
+
+    `pip install --user` — the fallback whenever the interpreter's own scripts
+    directory is not writable, which is the ordinary case for a system Python on
+    Windows — lands here. It is neither a sibling of `sys.executable` nor on
+    `PATH`. Measured 2026-08-18: this gate reported a correct, pinned semgrep as
+    missing for exactly that reason and blocked every commit in two repositories.
+    """
+
+    scheme = "nt_user" if os.name == "nt" else "posix_user"
+    if scheme not in sysconfig.get_scheme_names():
+        return None
+    try:
+        return Path(sysconfig.get_path("scripts", scheme=scheme))
+    except KeyError:
+        return None
+
+
 def semgrep_binary() -> str:
     configured = os.environ.get("SEMGREP_BIN")
+    if configured:
+        return configured
+    names = ("semgrep.exe", "semgrep") if os.name == "nt" else ("semgrep",)
     executable_dir = Path(sys.executable).resolve().parent
-    sibling_names = ("semgrep.exe", "semgrep") if os.name == "nt" else ("semgrep",)
-    sibling = next(
-        (
-            str(executable_dir / name)
-            for name in sibling_names
-            if (executable_dir / name).is_file()
-        ),
-        None,
-    )
-    binary = configured or sibling or shutil.which("semgrep")
+    directories = [executable_dir]
+    user_scripts = user_scripts_directory()
+    if user_scripts is not None:
+        directories.append(user_scripts)
+    # `executable_dir` is already the scripts directory inside a venv and on
+    # POSIX, but a Windows BASE install puts the interpreter one level up
+    # (`C:\Python314\python.exe`, console scripts in `C:\Python314\Scripts`).
+    # improvement-lab had fixed this locally in its vendored copy; merged here
+    # 2026-08-18 rather than overwritten by the sync.
+    #
+    # It goes LAST, after the per-user scheme, and that order is load-bearing:
+    # a stale system-wide semgrep in the base `Scripts` directory would
+    # otherwise win over the pinned per-user copy, and `verify_tool` raises on
+    # version drift with no fallback — re-blocking every commit, which is the
+    # incident this whole search exists to fix (review, 2026-08-18).
+    if os.name == "nt":
+        directories.append(executable_dir / "Scripts")
+    for directory in directories:
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file():
+                return str(candidate)
+    binary = shutil.which("semgrep")
     if not binary:
         raise SemgrepGateError(
             f"semgrep {REQUIRED_VERSION} is missing; install the pinned project tool"
@@ -76,6 +112,18 @@ def semgrep_binary() -> str:
 def run(binary: str, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["SEMGREP_SEND_METRICS"] = "off"
+    # The console script resolves its `pysemgrep` sibling through PATH, so a
+    # binary found OUTSIDE PATH fails with "executing pysemgrep failed" even
+    # though it is the correct pinned tool. Put its own directory first.
+    # `resolve()` is load-bearing: a bare-name SEMGREP_BIN would otherwise make
+    # this the relative ".", putting the scanned repository root on the child
+    # PATH so a checked-in `pysemgrep` could run instead of the real one.
+    directory = Path(binary).resolve().parent
+    if directory.is_dir():
+        existing = env.get("PATH", "")
+        env["PATH"] = (
+            f"{directory}{os.pathsep}{existing}" if existing else str(directory)
+        )
     return subprocess.run(
         [binary, *args],
         cwd=ROOT,

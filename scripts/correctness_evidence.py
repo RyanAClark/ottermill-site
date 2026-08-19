@@ -208,12 +208,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lane", required=True, choices=sorted(LANES))
     parser.add_argument("evidence", type=Path)
     args = parser.parse_args(argv)
+    # Product failure and harness failure are DIFFERENT channels, and this
+    # script's own `real-entrypoint-recovery` lane requires callers to tell them
+    # apart. Until 2026-08-18 both exited 2 printing "harness error", so
+    # "your evidence is incomplete" was indistinguishable from "I could not read
+    # the file" — the shape this gate exists to refuse, inside the gate itself.
+    # Sibling `changed_branch_gate.py` already splits them the same way.
     try:
         raw = json.loads(args.evidence.read_text(encoding="utf-8"))
-        validate(raw, args.lane)
-    except (OSError, UnicodeError, json.JSONDecodeError, EvidenceError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(f"correctness-evidence: harness error: {exc}", file=sys.stderr)
         return 2
+    try:
+        validate(raw, args.lane)
+    except EvidenceError as exc:
+        print(f"correctness-evidence: incomplete evidence: {exc}", file=sys.stderr)
+        return 1
     print(f"correctness-evidence: {args.lane} evidence is complete")
     return 0
 
