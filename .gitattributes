@@ -1,3 +1,8 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
 /ruff.toml text eol=lf
 /scripts/quality_gate.py text eol=lf
 /scripts/changed_branch_gate.py text eol=lf
