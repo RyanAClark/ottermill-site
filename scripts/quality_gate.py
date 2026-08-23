@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -13,12 +14,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tokenize
 import tomllib
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, Sequence, cast
+from typing import Callable, Iterable, Mapping, Sequence, cast
 
 
 TEMPLATE_VERSION = 1
@@ -31,6 +33,42 @@ A5_RECOVERY = (
     "split the rename from the edit into two commits."
 )
 FUNCTION_CODES = frozenset({"C901", "PLR0915"})
+UNSAFE_ANY_CAST_CODE = "QG001"
+UNSAFE_ANY_CAST_URL = "https://typing.python.org/en/latest/spec/directives.html#cast"
+TYPE_IGNORE_CODE = "QG002"
+BLANKET_TYPE_IGNORE_CODE = "QG002B"
+TYPE_IGNORE_URL = "https://mypy.readthedocs.io/en/stable/common_issues.html#spurious-errors-and-locally-silencing-the-checker"
+TYPE_IGNORE_PATTERNS = (
+    ("type", re.compile(r"^#\s*type:\s*ignore(?:\[(?P<codes>[^]]*)\])?")),
+    ("pyright", re.compile(r"^#\s*pyright:\s*ignore(?:\[(?P<codes>[^]]*)\])?")),
+)
+CONTAINER_TYPES = frozenset(
+    {
+        "AbstractSet",
+        "ChainMap",
+        "Collection",
+        "Container",
+        "Counter",
+        "DefaultDict",
+        "Deque",
+        "Dict",
+        "FrozenSet",
+        "Iterable",
+        "Iterator",
+        "List",
+        "Mapping",
+        "MutableMapping",
+        "MutableSequence",
+        "Sequence",
+        "Set",
+        "Tuple",
+        "dict",
+        "frozenset",
+        "list",
+        "set",
+        "tuple",
+    }
+)
 CODE_EXTENSIONS = frozenset(
     {
         ".c",
@@ -851,6 +889,205 @@ def _ruff_violation(raw_record: object, lookup: dict[str, str]) -> Violation:
     return Violation(relative, row, code, message, url, source, _metric(code, message))
 
 
+def _dotted_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent else None
+    return None
+
+
+def _typing_imports(
+    tree: ast.AST,
+) -> tuple[dict[str, str], set[str], set[str], set[str]]:
+    module_aliases: dict[str, str] = {}
+    cast_names: set[str] = set()
+    any_names: set[str] = set()
+    container_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in {"typing", "typing_extensions", "collections.abc"}:
+                    bound = alias.asname or alias.name.split(".")[0]
+                    module_aliases[bound] = alias.name if alias.asname else bound
+        elif isinstance(node, ast.ImportFrom) and node.module in {
+            "typing",
+            "typing_extensions",
+            "collections.abc",
+        }:
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if alias.name == "cast" and node.module != "collections.abc":
+                    cast_names.add(bound)
+                elif alias.name == "Any" and node.module != "collections.abc":
+                    any_names.add(bound)
+                elif alias.name in CONTAINER_TYPES:
+                    container_names.add(bound)
+    return module_aliases, cast_names, any_names, container_names
+
+
+def _canonical_name(node: ast.expr, module_aliases: Mapping[str, str]) -> str | None:
+    dotted = _dotted_name(node)
+    if not dotted:
+        return None
+    first, separator, remainder = dotted.partition(".")
+    canonical = module_aliases.get(first)
+    if canonical is None:
+        return dotted
+    return f"{canonical}.{remainder}" if separator else canonical
+
+
+def _is_typing_cast(
+    node: ast.expr, module_aliases: Mapping[str, str], cast_names: set[str]
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in cast_names
+    return _canonical_name(node, module_aliases) in {
+        "typing.cast",
+        "typing_extensions.cast",
+    }
+
+
+def _is_any_reference(
+    node: ast.expr, module_aliases: Mapping[str, str], any_names: set[str]
+) -> bool:
+    if isinstance(node, ast.Name) and node.id in any_names:
+        return True
+    return _canonical_name(node, module_aliases) in {
+        "typing.Any",
+        "typing_extensions.Any",
+    }
+
+
+def _is_container_reference(
+    node: ast.expr,
+    module_aliases: Mapping[str, str],
+    container_names: set[str],
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in CONTAINER_TYPES or node.id in container_names
+    canonical = _canonical_name(node, module_aliases)
+    if not canonical:
+        return False
+    prefix, _, name = canonical.rpartition(".")
+    return (
+        prefix in {"typing", "typing_extensions", "collections.abc"}
+        and name in CONTAINER_TYPES
+    )
+
+
+def _unsafe_any_container_target(
+    node: ast.expr,
+    module_aliases: Mapping[str, str],
+    any_names: set[str],
+    container_names: set[str],
+) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value, mode="eval").body
+        except SyntaxError:
+            return False
+    if not isinstance(node, ast.Subscript) or not _is_container_reference(
+        node.value, module_aliases, container_names
+    ):
+        return False
+    return any(
+        isinstance(child, ast.expr)
+        and _is_any_reference(child, module_aliases, any_names)
+        for child in ast.walk(node.slice)
+    )
+
+
+def _unsafe_any_container_casts(path_map: Mapping[Path, str]) -> list[Violation]:
+    violations: list[Violation] = []
+    for path, relative in path_map.items():
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=relative)
+        except (OSError, UnicodeError, SyntaxError) as exc:
+            raise BrokenCheckError(
+                f"quality-gate: BROKEN CHECK: cannot parse {relative}: {exc}"
+            ) from exc
+        module_aliases, cast_names, any_names, container_names = _typing_imports(tree)
+        lines = source.splitlines()
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Call)
+                or len(node.args) < 2
+                or not _is_typing_cast(node.func, module_aliases, cast_names)
+                or not _unsafe_any_container_target(
+                    node.args[0], module_aliases, any_names, container_names
+                )
+            ):
+                continue
+            text = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+            violations.append(
+                Violation(
+                    relative,
+                    node.lineno,
+                    UNSAFE_ANY_CAST_CODE,
+                    "typing.cast to a container containing Any bypasses element "
+                    "validation; validate object input into a domain type",
+                    UNSAFE_ANY_CAST_URL,
+                    text,
+                )
+            )
+    return violations
+
+
+def _type_ignore_suppressions(path_map: Mapping[Path, str]) -> list[Violation]:
+    violations: list[Violation] = []
+    for path, relative in path_map.items():
+        try:
+            source = path.read_text(encoding="utf-8")
+            tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+            comments = [token for token in tokens if token.type == tokenize.COMMENT]
+        except (OSError, UnicodeError, tokenize.TokenError) as exc:
+            raise BrokenCheckError(
+                f"quality-gate: BROKEN CHECK: cannot tokenize {relative}: {exc}"
+            ) from exc
+        for token in comments:
+            comment = token.string.strip()
+            for family, pattern in TYPE_IGNORE_PATTERNS:
+                match = pattern.match(comment)
+                if match is None:
+                    continue
+                raw_codes = match.group("codes")
+                codes = (
+                    [code.strip() for code in raw_codes.split(",") if code.strip()]
+                    if raw_codes is not None
+                    else []
+                )
+                if not codes:
+                    violations.append(
+                        Violation(
+                            relative,
+                            token.start[0],
+                            BLANKET_TYPE_IGNORE_CODE,
+                            f"bare {family} ignore suppresses every diagnostic; "
+                            "fix the type boundary or name the exact rule",
+                            TYPE_IGNORE_URL,
+                            f"{family}:blanket",
+                        )
+                    )
+                    break
+                for code in codes:
+                    violations.append(
+                        Violation(
+                            relative,
+                            token.start[0],
+                            TYPE_IGNORE_CODE,
+                            f"new {family} suppression for {code}; fix the type "
+                            "boundary or preserve only reviewed legacy debt",
+                            TYPE_IGNORE_URL,
+                            f"{family}:{code}",
+                        )
+                    )
+                break
+    return violations
+
+
 def _violations(
     ruff: Sequence[str], repo: Path, config: Path, path_map: dict[Path, str]
 ) -> list[Violation]:
@@ -883,7 +1120,14 @@ def _violations(
     lookup = {
         str(path.resolve()).lower(): relative for path, relative in path_map.items()
     }
-    return [_ruff_violation(record, lookup) for record in cast(list[object], parsed)]
+    ruff_violations = [
+        _ruff_violation(record, lookup) for record in cast(list[object], parsed)
+    ]
+    return (
+        ruff_violations
+        + _unsafe_any_container_casts(path_map)
+        + _type_ignore_suppressions(path_map)
+    )
 
 
 def _new_violations(

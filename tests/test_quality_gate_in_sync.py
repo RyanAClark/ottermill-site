@@ -14,14 +14,45 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "quality_gate.py"
 EXPECTED_GATE_SHA256 = (
-    "27d77691639b95111593820b7be5ecae3ba1d766c56899a8d85af1c9b4e47a83"
+    "de39548d0453fee135dfc7ab00320d476ef9f3f9d10f41d4f07a128e6aa153e1"
 )
+# Re-pinned 2026-08-18 (roadmap row 156): the estate-wide correctness census was
+# removed from the workflow because a runner checks out one repo and the census
+# scans fifteen, so it failed there on every push and CI never reached the steps
+# after it. The census itself is unchanged and still runs from .githooks/pre-commit
+# on the estate machine. Re-pin this deliberately, in the same change as the edit -
+# that is what makes an ACCIDENTAL workflow edit visible.
 EXPECTED_WORKFLOW_SHA256 = (
     "553a9b16e24af62d6d4b2cbdf9160c27ed52fe364d2b6c579fac037243cc2864"
 )
-EXPECTED_PYRIGHT_SHA256 = (
-    "c80e6197d0eaacdff671b9bdc13a5e7d3100078a45e71b1745182482fc193b86"
-)
+# pyrightconfig.json is RENDERED per repo, exactly as ruff.toml is: one base plus a
+# declared delta. It used to be pinned byte-for-byte across the estate, so a repo
+# whose importable modules do not all live under scripts/ had no way to say so
+# without loosening the gate everywhere. Ryan chose the per-repo delta, 2026-08-18.
+BASE_PYRIGHT: dict[str, object] = {
+    "typeCheckingMode": "strict",
+    "extraPaths": ["scripts"],
+    "useLibraryCodeForTypes": True,
+}
+PYRIGHT_DELTAS: dict[str, dict[str, object]] = {
+    "claude-config": {
+        # hooks/ holds importable modules (outcome.py and friends) that the suite
+        # imports directly. Unresolved, every symbol they reach becomes Unknown,
+        # which strict mode reports as ~120 errors that say nothing about the code.
+        # The repo root ("."), added 2026-08-19, is the same defect one import
+        # form over: tests that import `from scripts.X import ...` (the package
+        # form, not the extraPath form) resolved to nothing, so strict mode
+        # reported Unknown for every symbol they reached. DECLARED HERE, not
+        # hand-edited into pyrightconfig.json - that file is RENDERED from this
+        # declaration and the test below asserts byte equality, so an in-place
+        # edit desyncs the repo instead of fixing it (audit finding F2).
+        "extraPaths": [".", "scripts", "hooks"],
+        # A test suite reaching into a module's internals is what these tests are
+        # FOR: they pin private seams deliberately. Renaming internals to satisfy a
+        # checker would be the wrong direction.
+        "executionEnvironments": [{"root": "tests", "reportPrivateUsage": "none"}],
+    },
+}
 BASE_RUFF = (
     "# generated from templates/code-quality/ruff.base.toml "
     "@ v1 - do not hand-edit\n"
@@ -35,6 +66,7 @@ EXCLUSIONS = {
         "skills/aws-observability/",
         "skills/aws-serverless/",
         "skills/launch-with-aws/",
+        "tests/fixtures/language-routing/",
     ),
     "cloud-claude-trading": ("spikes/", "docs/javascripts/"),
 }
@@ -143,6 +175,37 @@ def repo_identity(root: Path = ROOT) -> str:
     return checkout_name(root)
 
 
+def _pyright_json(value: object, indent: int = 0) -> str:
+    """Serialise the way the checked-in configs are already written.
+
+    Objects expand one key per line at two spaces; arrays of scalars stay inline.
+    This is not cosmetic: a repo that declares NO delta has to render byte-for-byte
+    identical to the file already committed there, or syncing this test breaks
+    every consumer at once.
+    """
+    pad = " " * indent
+    inner = " " * (indent + 2)
+    if isinstance(value, dict):
+        items = cast("dict[str, object]", value).items()
+        body = ",\n".join(
+            f"{inner}{json.dumps(k)}: {_pyright_json(v, indent + 2)}" for k, v in items
+        )
+        return "{\n" + body + "\n" + pad + "}"
+    if isinstance(value, list):
+        entries = cast("list[object]", value)
+        if all(isinstance(e, (str, int, float, bool)) for e in entries):
+            return json.dumps(entries)
+        body = ",\n".join(f"{inner}{_pyright_json(e, indent + 2)}" for e in entries)
+        return "[\n" + body + "\n" + pad + "]"
+    return json.dumps(value)
+
+
+def rendered_pyright() -> bytes:
+    config = dict(BASE_PYRIGHT)
+    config.update(PYRIGHT_DELTAS.get(repo_identity(), {}))
+    return (_pyright_json(config) + "\n").encode("utf-8")
+
+
 def rendered_ruff() -> bytes:
     excluded = EXCLUSIONS.get(repo_identity(), ("spikes/",))
     first, rest = BASE_RUFF.split("\n", 1)
@@ -162,14 +225,14 @@ def test_vendored_checker_and_workflow_match_template_hashes() -> None:
     assert quality_gate.template_sha256(GATE) == EXPECTED_GATE_SHA256
     workflow = ROOT / ".github" / "workflows" / "quality.yml"
     assert quality_gate.template_sha256(workflow) == EXPECTED_WORKFLOW_SHA256
-    assert (
-        quality_gate.template_sha256(ROOT / "pyrightconfig.json")
-        == EXPECTED_PYRIGHT_SHA256
-    )
 
 
 def test_generated_ruff_config_matches_declared_repo_deltas() -> None:
     assert canonical_bytes(ROOT / "ruff.toml") == rendered_ruff()
+
+
+def test_generated_pyright_config_matches_declared_repo_deltas() -> None:
+    assert canonical_bytes(ROOT / "pyrightconfig.json") == rendered_pyright()
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
