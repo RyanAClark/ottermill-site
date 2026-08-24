@@ -84,12 +84,14 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 		record "$repo" "-" "$local_sha" 0 0 0 0 0 "skipped_env"
 		continue
 	fi
-	case "$remote_sha" in *[!0]*) base="$remote_sha";; *) base="origin/main";; esac
-	# On the FIRST push of main, git hands the hook an all-zero remote sha and
-	# the fallback names a ref that does not exist locally either - `git diff`
-	# then fails and the review is skipped with nothing but an ambiguous-argument
-	# error to show for it. Found by this hook reviewing its own arrival in
-	# agent-flow. A skip is fine; a SILENT skip is not.
+	case "$remote_sha" in
+		*[!0]*) base="$remote_sha";;
+		*)
+			echo "NO REVIEW: destination main has no base (first push) - pushing unreviewed" >&2
+			record "$repo" "-" "$local_sha" 0 0 0 0 0 "skipped_new_remote"
+			continue
+			;;
+	esac
 	# A raw 40-character SHA passes `rev-parse --verify` even when the object is
 	# absent locally. Fetch the advertised remote ref before diffing it. observed:
 	# trading main push 2026-08-24, fatal "Invalid revision range".
@@ -99,7 +101,7 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 		fi
 	fi
 	if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-		echo "NO REVIEW: base ref '$base' does not resolve (first push of this branch?) - pushing unreviewed" >&2
+		echo "NO REVIEW: base ref '$base' does not resolve - pushing unreviewed" >&2
 		record "$repo" "$base" "$local_sha" 0 0 0 0 0 "skipped_no_base"
 		continue
 	fi
