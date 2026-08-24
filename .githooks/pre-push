@@ -1,0 +1,199 @@
+#!/bin/sh
+# Advisory review on a push to main. Prints what a fresh model found; never blocks.
+# Set SKIP_REVIEW=1 to skip. No verdict, no gate — but it DOES record one metrics
+# line per push (see METRICS below), because the deleted review ledger's mistake was
+# asking the REVIEWER for structured data. A model asked to review code writes prose
+# for a human (measured 2026-08-20, 82aada2: thirteen runs, zero JSON). This hook
+# already knows every field worth counting, so nothing is asked of the model.
+METRICS="$HOME/.claude/artifacts/review-metrics.jsonl"
+CLAUDE_REVIEWER_MODEL="${CLAUDE_REVIEWER_MODEL:-claude-sonnet-5}"
+CODEX_REVIEWER_MODEL="${CODEX_REVIEWER_MODEL:-gpt-5.6-sol}"
+REVIEWER_MODEL="none"
+REVIEW_PROMPT="Review this diff for real defects. You are in the repository: open files, run things, confirm before you claim. \
+For each finding you DEMONSTRATED, state the defect as a property that can be searched for, not a location. Run that \
+search and report the exact command and its output. Leave one failing test under tests/findings/ that fails against \
+the code as it stands now, asserts the property across every site the search returned, and whose failure message names \
+each site; name that file in your report. If the search returns one site, say so and give the same command and output. \
+Report anything you could not demonstrate as prose only, with no test. \
+Drop anything you would have to hedge. An empty review is a good outcome. Never comment on style. \
+Write for a human, in prose."
+CODEX_REVIEW_PROMPT="Review only the supplied diff for concrete behavioral defects. Local tools are intentionally unavailable \
+in this read-only fallback, so do not claim you opened files or ran tests. Report each finding with its diff path and line, \
+the failing behavior, and why the changed code causes it. Drop anything you would have to hedge. An empty review is a good \
+outcome. Never comment on style. Write for a human, in prose."
+
+resolve_codex() {
+	codex_path=$(command -v codex 2>/dev/null) || codex_path=""
+	if [ -n "$codex_path" ] && "$codex_path" --version >/dev/null 2>&1; then
+		printf '%s\n' "$codex_path"
+		return 0
+	fi
+
+	# The Microsoft Store package exposes an extensionless PE that Git Bash can
+	# discover but cannot execute, and Windows denies its packaged codex.exe to a
+	# hook child process. Copy the real binary to user-owned storage and execute
+	# that stable cache. observed: trading main push 2026-08-24, review exit 127.
+	[ "${OS:-}" = "Windows_NT" ] || return 1
+	codex_source=$(command -v codex.exe 2>/dev/null) || codex_source=""
+	[ -n "$codex_source" ] || return 1
+	codex_cache="${CODEX_HOOK_CACHE:-$HOME/.codex/hook-bin/codex.exe}"
+	cache_dir=$(dirname "$codex_cache")
+	mkdir -p "$cache_dir" 2>/dev/null || return 1
+	source_size=$(wc -c < "$codex_source" 2>/dev/null | tr -d ' ') || return 1
+	cache_size=""
+	[ -f "$codex_cache" ] && cache_size=$(wc -c < "$codex_cache" 2>/dev/null | tr -d ' ')
+	if [ ! -x "$codex_cache" ] || [ "$codex_source" -nt "$codex_cache" ] || [ "$source_size" != "$cache_size" ]; then
+		codex_pending="${codex_cache}.$$"
+		if ! cp "$codex_source" "$codex_pending" 2>/dev/null || ! mv -f "$codex_pending" "$codex_cache" 2>/dev/null; then
+			rm -f "$codex_pending" 2>/dev/null || true
+			return 1
+		fi
+		chmod +x "$codex_cache" 2>/dev/null || true
+	fi
+	if "$codex_cache" --version >/dev/null 2>&1; then
+		printf '%s\n' "$codex_cache"
+		return 0
+	fi
+	return 1
+}
+
+# A findings test the review LEFT is the catch signal. Untracked strays already
+# sitting in tests/findings/ from earlier sessions would otherwise read as a catch
+# on every push forever, so the count is a BEFORE/AFTER delta, never an absolute.
+findings_count() {
+	git status --porcelain --untracked-files=all -- tests/findings/ 2>/dev/null | grep -c .
+}
+
+record() {
+	# Never let telemetry break a push: the whole append is best-effort.
+	mkdir -p "$(dirname "$METRICS")" 2>/dev/null || return 0
+	printf '{"ts":"%s","repo":"%s","base":"%s","head":"%s","reviewer_model":"%s","files":%s,"diff_bytes":%s,"new_findings_tests":%s,"duration_s":%s,"review_rc":%s,"outcome":"%s"}\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$REVIEWER_MODEL" \
+		"$4" "$5" "$6" "$7" "$8" "$9" >> "$METRICS" 2>/dev/null || true
+}
+
+remote_name=${1:-}
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+	[ "$remote_ref" = "refs/heads/main" ] || continue
+	repo=$(basename "$(git rev-parse --show-toplevel)")
+	if [ -n "$SKIP_REVIEW" ]; then
+		# A skipped review and a review that found nothing must not look the same
+		# in the metrics, or the catch-rate denominator silently includes pushes
+		# nobody ever reviewed.
+		record "$repo" "-" "$local_sha" 0 0 0 0 0 "skipped_env"
+		continue
+	fi
+	case "$remote_sha" in *[!0]*) base="$remote_sha";; *) base="origin/main";; esac
+	# On the FIRST push of main, git hands the hook an all-zero remote sha and
+	# the fallback names a ref that does not exist locally either - `git diff`
+	# then fails and the review is skipped with nothing but an ambiguous-argument
+	# error to show for it. Found by this hook reviewing its own arrival in
+	# agent-flow. A skip is fine; a SILENT skip is not.
+	# A raw 40-character SHA passes `rev-parse --verify` even when the object is
+	# absent locally. Fetch the advertised remote ref before diffing it. observed:
+	# trading main push 2026-08-24, fatal "Invalid revision range".
+	if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+		if [ -n "$remote_name" ] && [ "$base" = "$remote_sha" ]; then
+			git fetch --quiet --no-tags "$remote_name" "$remote_ref" >/dev/null 2>&1 || true
+		fi
+	fi
+	if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+		echo "NO REVIEW: base ref '$base' does not resolve (first push of this branch?) - pushing unreviewed" >&2
+		record "$repo" "$base" "$local_sha" 0 0 0 0 0 "skipped_no_base"
+		continue
+	fi
+	if ! diff=$(git diff "$base".."$local_sha"); then
+		echo "NO REVIEW: git diff failed for $base..$local_sha - pushing unreviewed" >&2
+		record "$repo" "$base" "$local_sha" 0 0 0 0 1 "skipped_diff_error"
+		continue
+	fi
+	if [ -z "$diff" ]; then
+		# An empty diff against base still reaches main (a no-op merge, a
+		# re-push of an already-merged tip). Left silent, it is the ONE exit
+		# that writes no row at all, so the total-pushes denominator drops
+		# without anything saying so. Found by this hook reviewing its own
+		# arrival.
+		record "$repo" "$base" "$local_sha" 0 0 0 0 0 "skipped_empty_diff"
+		continue
+	fi
+	files=$(git diff --name-only "$base".."$local_sha" | grep -c .)
+	diff_bytes=$(printf '%s' "$diff" | wc -c | tr -d ' ')
+	before=$(findings_count)
+	started=$(date +%s)
+	printf '\n--- review of %s..%s ---\n' "$base" "$local_sha" >&2
+	REVIEWER_MODEL="$CLAUDE_REVIEWER_MODEL"
+	used_fallback=0
+	if command -v claude >/dev/null 2>&1; then
+		printf '%s' "$diff" | timeout 900 claude -p "$REVIEW_PROMPT" \
+			--model "$REVIEWER_MODEL" --settings '{"outputStyle": "default"}' >&2
+		review_rc=$?
+	else
+		review_rc=127
+		REVIEWER_MODEL="none"
+	fi
+	if [ "$review_rc" -ne 0 ]; then
+		primary_rc=$review_rc
+		CODEX_COMMAND=$(resolve_codex) || CODEX_COMMAND=""
+		if [ -n "$CODEX_COMMAND" ]; then
+			REVIEWER_MODEL="$CODEX_REVIEWER_MODEL"
+			used_fallback=1
+			echo "CLAUDE REVIEWER UNAVAILABLE/FAILED (exit $primary_rc); trying Codex $REVIEWER_MODEL" >&2
+			repo_root=$(git rev-parse --show-toplevel)
+			printf '%s' "$diff" | timeout 900 "$CODEX_COMMAND" exec --ephemeral \
+				--sandbox read-only --ignore-user-config -C "$repo_root" \
+				-m "$REVIEWER_MODEL" "$CODEX_REVIEW_PROMPT" >&2
+			review_rc=$?
+		else
+			review_rc=127
+		fi
+	fi
+	duration=$(( $(date +%s) - started ))
+	after=$(findings_count)
+	new_tests=$(( after - before ))
+	[ "$new_tests" -lt 0 ] && new_tests=0
+	if [ "$review_rc" -eq 124 ]; then
+		# `timeout` exits 124, and a timeout is NOT the same event as a crash:
+		# it means the diff outran the 900s budget, so the right response is to
+		# split the push or review it by hand, not to debug the reviewer. Named
+		# separately because "EXITED 124" is a number nobody should have to look
+		# up at the moment their push is going out.
+		echo "REVIEW TIMED OUT after ${duration}s - this push was NOT reviewed. The diff is probably too large; split it or review by hand." >&2
+		outcome="reviewer_timeout"
+	elif [ "$review_rc" -ne 0 ]; then
+		# A reviewer that died and a reviewer that found nothing both print little.
+		echo "REVIEW EXITED $review_rc - this push was NOT reviewed cleanly" >&2
+		outcome="reviewer_error"
+	elif [ "$new_tests" -gt 0 ]; then
+		if [ "$used_fallback" -eq 1 ]; then
+			outcome="fallback_found_with_test"
+		else
+			outcome="found_with_test"
+		fi
+	else
+		if [ "$used_fallback" -eq 1 ]; then
+			outcome="fallback_no_test_left"
+		else
+			outcome="no_test_left"
+		fi
+	fi
+	record "$repo" "$base" "$local_sha" "$files" "$diff_bytes" "$new_tests" "$duration" "$review_rc" "$outcome"
+	# The review runs DURING the push, so a test it leaves behind is not in
+	# the commit that just went out. Name it: a findings test nobody knows
+	# exists is the failure this mechanism exists to stop. The hook does NOT
+	# commit it - a hook writing to main behind you is worse than an
+	# untracked file.
+	left=$(git status --porcelain --untracked-files=all -- tests/findings/)
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		# Muting this call's stderr made a FAILED check read exactly like a
+		# clean one - the silent failure this block exists to prevent, inside
+		# the block itself. Found by the first review of the block.
+		echo "COULD NOT CHECK tests/findings/ - git status exited $rc; a findings test may be uncommitted and unnamed" >&2
+	elif [ -n "$left" ]; then
+		echo "UNCOMMITTED findings tests - commit these or they are lost:" >&2
+		echo "$left" >&2
+	fi
+	printf -- '--- end review (advisory; push continues) ---\n\n' >&2
+done
+exit 0
