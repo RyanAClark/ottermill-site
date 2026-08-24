@@ -124,10 +124,14 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 	printf '\n--- review of %s..%s ---\n' "$base" "$local_sha" >&2
 	REVIEWER_MODEL="$CLAUDE_REVIEWER_MODEL"
 	used_fallback=0
+	primary_new_tests=0
 	if command -v claude >/dev/null 2>&1; then
 		printf '%s' "$diff" | timeout 900 claude -p "$REVIEW_PROMPT" \
 			--model "$REVIEWER_MODEL" --settings '{"outputStyle": "default"}' >&2
 		review_rc=$?
+		primary_after=$(findings_count)
+		primary_new_tests=$(( primary_after - before ))
+		[ "$primary_new_tests" -lt 0 ] && primary_new_tests=0
 	else
 		review_rc=127
 		REVIEWER_MODEL="none"
@@ -140,9 +144,13 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 			used_fallback=1
 			echo "CLAUDE REVIEWER UNAVAILABLE/FAILED (exit $primary_rc); trying Codex $REVIEWER_MODEL" >&2
 			repo_root=$(git rev-parse --show-toplevel)
-			printf '%s' "$diff" | timeout 900 "$CODEX_COMMAND" exec --ephemeral \
+			{
+				printf '%s\n\n<diff>\n' "$CODEX_REVIEW_PROMPT"
+				printf '%s\n' "$diff"
+				printf '%s\n' '</diff>'
+			} | timeout 900 "$CODEX_COMMAND" exec --ephemeral \
 				--sandbox read-only --ignore-user-config -C "$repo_root" \
-				-m "$REVIEWER_MODEL" "$CODEX_REVIEW_PROMPT" >&2
+				-m "$REVIEWER_MODEL" - >&2
 			review_rc=$?
 		else
 			review_rc=127
@@ -164,6 +172,8 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 		# A reviewer that died and a reviewer that found nothing both print little.
 		echo "REVIEW EXITED $review_rc - this push was NOT reviewed cleanly" >&2
 		outcome="reviewer_error"
+	elif [ "$used_fallback" -eq 1 ] && [ "$primary_new_tests" -gt 0 ]; then
+		outcome="primary_found_with_test_then_fallback"
 	elif [ "$new_tests" -gt 0 ]; then
 		if [ "$used_fallback" -eq 1 ]; then
 			outcome="fallback_found_with_test"
