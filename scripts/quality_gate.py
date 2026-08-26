@@ -589,8 +589,22 @@ def _type_diagnostics(
     if not python_paths:
         return []
     try:
+        # Resolve third-party imports (pytest and friends) from the SAME
+        # interpreter running this gate, not from whatever python happens to be
+        # first on PATH in the hook child. Without this, a commit made from a
+        # shell without the repo venv on PATH reported every test-file import
+        # as Unknown and blocked on ~7 phantom errors. observed: agent-flow
+        # commit attempt 2026-08-25 (platform contract v1 slice 1).
         proc = _command(
-            (*pyright, "--outputjson", "--project", "pyrightconfig.json"), cwd=root
+            (
+                *pyright,
+                "--outputjson",
+                "--pythonpath",
+                sys.executable,
+                "--project",
+                "pyrightconfig.json",
+            ),
+            cwd=root,
         )
     except OSError as exc:
         raise BrokenCheckError(

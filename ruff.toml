@@ -1,4 +1,4 @@
-# generated from templates/code-quality/ruff.base.toml @ v1 - do not hand-edit
+# generated from templates/code-quality/ruff.base.toml @ v2 - do not hand-edit
 extend-exclude = ["spikes/"]
 [lint]
-select = ["E", "F", "B", "BLE", "C901", "PLR0915", "N"]
+select = ["E", "F", "B", "BLE", "C901", "PLR0915", "N", "ERA", "SIM"]

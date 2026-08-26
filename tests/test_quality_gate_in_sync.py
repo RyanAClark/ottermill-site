@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "quality_gate.py"
 EXPECTED_GATE_SHA256 = (
-    "de39548d0453fee135dfc7ab00320d476ef9f3f9d10f41d4f07a128e6aa153e1"
+    "c99673f7ba1defcf8e5f3bb821bf4a231a2d10a6021d9e8819b102477954fc37"
 )
 # Re-pinned 2026-08-18 (roadmap row 156): the estate-wide correctness census was
 # removed from the workflow because a runner checks out one repo and the census
@@ -55,9 +55,9 @@ PYRIGHT_DELTAS: dict[str, dict[str, object]] = {
 }
 BASE_RUFF = (
     "# generated from templates/code-quality/ruff.base.toml "
-    "@ v1 - do not hand-edit\n"
+    "@ v2 - do not hand-edit\n"
     "[lint]\n"
-    'select = ["E", "F", "B", "BLE", "C901", "PLR0915", "N"]\n'
+    'select = ["E", "F", "B", "BLE", "C901", "PLR0915", "N", "ERA", "SIM"]\n'
 )
 EXCLUSIONS = {
     "claude-config": (
