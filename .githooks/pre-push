@@ -35,8 +35,20 @@ resolve_codex() {
 	# that stable cache. observed: trading main push 2026-08-24, review exit 127.
 	[ "${OS:-}" = "Windows_NT" ] || return 1
 	codex_source=$(command -v codex.exe 2>/dev/null) || codex_source=""
-	[ -n "$codex_source" ] || return 1
 	codex_cache="${CODEX_HOOK_CACHE:-$HOME/.codex/hook-bin/codex.exe}"
+	if [ -z "$codex_source" ]; then
+		# No discoverable source: the Store alias was removed or the hook child
+		# runs on a stripped PATH. The cache is the last known good binary, and
+		# a review from a slightly stale reviewer beats no review at all.
+		# observed: agent-flow main push 2026-08-25, review exit 127 while a
+		# working cached codex.exe sat unused because this branch required a
+		# PATH source before it would even look at the cache.
+		if [ -x "$codex_cache" ] && "$codex_cache" --version >/dev/null 2>&1; then
+			printf '%s\n' "$codex_cache"
+			return 0
+		fi
+		return 1
+	fi
 	cache_dir=$(dirname "$codex_cache")
 	mkdir -p "$cache_dir" 2>/dev/null || return 1
 	source_size=$(wc -c < "$codex_source" 2>/dev/null | tr -d ' ') || return 1
